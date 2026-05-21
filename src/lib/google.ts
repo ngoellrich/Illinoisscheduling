@@ -51,20 +51,27 @@ export async function handleCallback(code: string, userId: string): Promise<void
   });
 }
 
-/** An authorized client for a rep, using their stored refresh token. */
-export function clientForRep(rep: User): OAuth2Client | null {
-  if (!rep.googleRefreshToken) return null;
+// =============================================================================
+// Calendars: read intake + write appointments to reps' calendars, all through
+// the single connected admin account (the "owner").
+// =============================================================================
+
+/** An authorized client for the connected owner account. */
+export function clientForUser(user: User): OAuth2Client | null {
+  if (!user.googleRefreshToken) return null;
   const client = oauthClient();
-  client.setCredentials({ refresh_token: decrypt(rep.googleRefreshToken) });
+  client.setCredentials({ refresh_token: decrypt(user.googleRefreshToken) });
   return client;
 }
 
 /**
- * Create the appointment on the rep's own calendar.
- * Returns the Google event id, or null if the rep isn't connected.
+ * Create the appointment on the given calendar, using the owner account's
+ * access (the rep's calendar must be shared to the owner with edit rights).
+ * Returns the Google event id, or null if it couldn't be created.
  */
-export async function createRepEvent(
-  rep: User,
+export async function createEvent(
+  owner: User,
+  calendarId: string,
   appt: {
     title: string;
     location?: string | null;
@@ -73,12 +80,12 @@ export async function createRepEvent(
     endsAt: Date;
   }
 ): Promise<string | null> {
-  const client = clientForRep(rep);
-  if (!client) return null;
+  const client = clientForUser(owner);
+  if (!client || !calendarId) return null;
 
   const calendar = google.calendar({ version: "v3", auth: client });
   const res = await calendar.events.insert({
-    calendarId: rep.googleCalendarId || "primary",
+    calendarId,
     requestBody: {
       summary: appt.title,
       location: appt.location || undefined,
@@ -91,45 +98,39 @@ export async function createRepEvent(
   return res.data.id || null;
 }
 
-/** Cancel a previously created rep event (best-effort). */
-export async function deleteRepEvent(rep: User, eventId: string): Promise<void> {
-  const client = clientForRep(rep);
-  if (!client) return;
+/** Delete an event from a calendar (best-effort). */
+export async function deleteEvent(owner: User, calendarId: string, eventId: string): Promise<void> {
+  const client = clientForUser(owner);
+  if (!client || !calendarId) return;
   const calendar = google.calendar({ version: "v3", auth: client });
   try {
-    await calendar.events.delete({
-      calendarId: rep.googleCalendarId || "primary",
-      eventId,
-      sendUpdates: "all",
-    });
+    await calendar.events.delete({ calendarId, eventId, sendUpdates: "all" });
   } catch {
     // ignore: event may already be gone
   }
 }
 
-// =============================================================================
-// Intake calendar (the admin's Google Calendar that appointments land on)
-// =============================================================================
-
-/** An authorized client for any connected user (admin or rep). */
-export function clientForUser(user: User): OAuth2Client | null {
-  if (!user.googleRefreshToken) return null;
-  const client = oauthClient();
-  client.setCredentials({ refresh_token: decrypt(user.googleRefreshToken) });
-  return client;
+export interface CalendarOption {
+  id: string;
+  summary: string;
+  primary: boolean;
+  canWrite: boolean; // owner/writer access — required for rep destinations
 }
 
-/** List the connected account's calendars (for the intake-calendar picker). */
-export async function listCalendars(
-  user: User
-): Promise<{ id: string; summary: string; primary: boolean }[]> {
+/** List the connected account's calendars (intake source + rep destinations). */
+export async function listCalendars(user: User): Promise<CalendarOption[]> {
   const client = clientForUser(user);
   if (!client) return [];
   const calendar = google.calendar({ version: "v3", auth: client });
   const res = await calendar.calendarList.list({ maxResults: 250 });
   return (res.data.items || [])
     .filter((c) => c.id)
-    .map((c) => ({ id: c.id!, summary: c.summary || c.id!, primary: !!c.primary }));
+    .map((c) => ({
+      id: c.id!,
+      summary: c.summary || c.id!,
+      primary: !!c.primary,
+      canWrite: c.accessRole === "owner" || c.accessRole === "writer",
+    }));
 }
 
 export interface WatchResult {

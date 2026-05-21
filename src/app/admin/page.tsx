@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { weekStart, fmt } from "@/lib/time";
 import { addRep, cancelAppointment } from "./actions";
+import { listCalendars, type CalendarOption } from "@/lib/google";
 import TopBar from "@/components/TopBar";
 import RepCard, { RepCardData } from "@/components/RepCard";
 import ReassignButton from "@/components/ReassignButton";
@@ -42,9 +43,20 @@ export default async function AdminPage() {
   const pendingCount = await prisma.appointment.count({ where: { status: "PENDING" } });
   const intake = await prisma.intakeState.findUnique({ where: { id: "intake" } });
 
-  // Active reps available as reassignment targets.
+  // The connected account's calendars, used to map reps to their calendars.
+  let calendars: CalendarOption[] = [];
+  if (user.googleConnected) {
+    try {
+      calendars = await listCalendars(user);
+    } catch {
+      calendars = [];
+    }
+  }
+  const writableCalendars = calendars.filter((c) => c.canWrite);
+
+  // Active reps (with a calendar mapped) available as reassignment targets.
   const repOptions = reps
-    .filter((r) => r.active)
+    .filter((r) => r.active && r.googleCalendarId)
     .map((r) => ({ id: r.id, label: r.name || r.email }));
 
   return (
@@ -69,14 +81,31 @@ export default async function AdminPage() {
             <h2 className="text-lg font-bold">Reps</h2>
           </div>
 
+          {!user.googleConnected && (
+            <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Connect your Google account in <b>Appointment source</b> above to map reps to calendars.
+            </p>
+          )}
+
           <form action={addRep} className="card mb-5 flex flex-wrap items-end gap-3">
-            <div className="flex-1 min-w-[180px]">
+            <div className="min-w-[150px] flex-1">
               <label className="label">Name</label>
               <input name="name" className="input" placeholder="Jane Rep" />
             </div>
-            <div className="flex-1 min-w-[180px]">
-              <label className="label">Email *</label>
+            <div className="min-w-[180px] flex-1">
+              <label className="label">Email</label>
               <input name="email" type="email" required className="input" placeholder="jane@company.com" />
+            </div>
+            <div className="min-w-[180px] flex-1">
+              <label className="label">Rep's calendar</label>
+              <select name="calendarId" className="input" defaultValue="">
+                <option value="">— map later —</option>
+                {writableCalendars.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.summary}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="label">Weekly cap</label>
@@ -96,7 +125,7 @@ export default async function AdminPage() {
                 email: r.email,
                 weeklyCap: r.weeklyCap,
                 active: r.active,
-                googleConnected: r.googleConnected,
+                googleCalendarId: r.googleCalendarId,
                 weekCount: countMap.get(r.id) ?? 0,
               };
               const windows: Window[] = r.availability.map((a) => ({
@@ -104,7 +133,7 @@ export default async function AdminPage() {
                 startMin: a.startMin,
                 endMin: a.endMin,
               }));
-              return <RepCard key={r.id} rep={data} windows={windows} />;
+              return <RepCard key={r.id} rep={data} windows={windows} calendars={calendars} />;
             })}
           </div>
         </section>

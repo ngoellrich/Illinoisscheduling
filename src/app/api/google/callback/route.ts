@@ -12,16 +12,15 @@ export async function GET(req: Request) {
   const code = url.searchParams.get("code");
   const error = url.searchParams.get("error");
   if (error || !code) {
-    return NextResponse.redirect(`${env.appUrl()}/rep?error=google_denied`);
+    return NextResponse.redirect(`${env.appUrl()}/admin?error=google_denied`);
   }
 
   try {
-    // Bind to the session user (not to `state`) so a rep can only connect
-    // calendar access for their own account.
+    // Bind to the session user so the connection attaches to the signed-in admin.
     await handleCallback(code, user.id);
-    return NextResponse.redirect(`${env.appUrl()}/rep?connected=1`);
+    return NextResponse.redirect(`${env.appUrl()}/admin?connected=1`);
   } catch (e) {
     console.error("Google callback failed:", e);
-    return NextResponse.redirect(`${env.appUrl()}/rep?error=google_failed`);
+    return NextResponse.redirect(`${env.appUrl()}/admin?error=google_failed`);
   }
 }

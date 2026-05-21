@@ -1,11 +1,6 @@
 import { prisma } from "./prisma";
 import { env } from "./env";
-import {
-  createRepEvent,
-  deleteRepEvent,
-  fetchChangedEvents,
-  markIntakeAssigned,
-} from "./google";
+import { createEvent, deleteEvent, fetchChangedEvents, markIntakeAssigned } from "./google";
 import { dayOfWeek, minutesOfDay, weekStart } from "./time";
 import type { Availability, User } from "@prisma/client";
 import type { calendar_v3 } from "googleapis";
@@ -115,6 +110,9 @@ function eligibleReps(
 
   const out: EligibleRep[] = [];
   for (const rep of reps) {
+    // Must have a calendar mapped, or there's nowhere to place the appointment.
+    if (!rep.googleCalendarId) continue;
+
     // Rule 1: availability window covers the appointment.
     const fits = rep.availability.some(
       (w) => w.dayOfWeek === wd && startMin >= w.startMin && endMin <= w.endMin
@@ -204,7 +202,9 @@ async function processIntakeEvent(
   if (ev.status === "cancelled") {
     if (existing && existing.status !== "CANCELLED") {
       const rep = existing.repId ? await prisma.user.findUnique({ where: { id: existing.repId } }) : null;
-      if (rep && existing.googleEventId) await deleteRepEvent(rep, existing.googleEventId);
+      if (rep?.googleCalendarId && existing.googleEventId) {
+        await deleteEvent(owner, rep.googleCalendarId, existing.googleEventId);
+      }
       await prisma.appointment.update({ where: { id: existing.id }, data: { status: "CANCELLED" } });
     }
     return;
@@ -242,21 +242,12 @@ async function processIntakeEvent(
   }
 
   try {
-    const eventId = await createRepEvent(best.rep, appt);
+    const eventId = await createEvent(owner, best.rep.googleCalendarId!, appt);
     if (eventId)
       await prisma.appointment.update({ where: { id: appt.id }, data: { googleEventId: eventId } });
   } catch (e) {
     console.error("Calendar push failed (intake):", e);
   }
-
-  await prisma.notification.create({
-    data: {
-      repId: best.rep.id,
-      message: `New appointment: ${parsed.title} on ${parsed.start.toLocaleString()}${
-        parsed.location ? ` @ ${parsed.location}` : ""
-      }`,
-    },
-  });
 
   await markIntakeAssigned(
     owner,
@@ -266,6 +257,13 @@ async function processIntakeEvent(
     appt.id,
     parsed.title
   );
+}
+
+/** The connected owner account that reads intake + writes to rep calendars. */
+async function getIntakeOwner(): Promise<User | null> {
+  const state = await prisma.intakeState.findUnique({ where: { id: "intake" } });
+  if (!state?.ownerUserId) return null;
+  return prisma.user.findUnique({ where: { id: state.ownerUserId } });
 }
 
 /**
@@ -321,14 +319,20 @@ export async function reassignAppointment(appointmentId: string, newRepId: strin
 
   const newRep = await prisma.user.findUnique({ where: { id: newRepId } });
   if (!newRep || newRep.role !== "REP" || !newRep.active) throw new Error("Invalid rep.");
+  if (!newRep.googleCalendarId) throw new Error("That rep has no calendar mapped yet.");
+
+  const owner = await getIntakeOwner();
+  if (!owner) throw new Error("Connect your Google account first.");
 
   // Remove the event from the previous rep's calendar.
-  if (appt.rep && appt.googleEventId) await deleteRepEvent(appt.rep, appt.googleEventId);
+  if (appt.rep?.googleCalendarId && appt.googleEventId) {
+    await deleteEvent(owner, appt.rep.googleCalendarId, appt.googleEventId);
+  }
 
   // Create it on the new rep's calendar.
   let newEventId: string | null = null;
   try {
-    newEventId = await createRepEvent(newRep, appt);
+    newEventId = await createEvent(owner, newRep.googleCalendarId, appt);
   } catch (e) {
     console.error("Calendar push failed (reassign):", e);
   }
@@ -336,13 +340,6 @@ export async function reassignAppointment(appointmentId: string, newRepId: strin
   await prisma.appointment.update({
     where: { id: appt.id },
     data: { repId: newRep.id, status: "ASSIGNED", googleEventId: newEventId },
-  });
-
-  await prisma.notification.create({
-    data: {
-      repId: newRep.id,
-      message: `Appointment assigned to you: ${appt.title} on ${appt.startsAt.toLocaleString()}`,
-    },
   });
 }
 
@@ -362,6 +359,7 @@ export async function reassignPending(): Promise<number> {
     where: { status: "PENDING" },
     orderBy: { startsAt: "asc" },
   });
+  const owner = await getIntakeOwner();
   let assigned = 0;
   for (const appt of pending) {
     const [reps, busyByRep, weekCounts] = await Promise.all([
@@ -377,18 +375,14 @@ export async function reassignPending(): Promise<number> {
       data: { repId: best.rep.id, status: "ASSIGNED" },
     });
     try {
-      const eventId = await createRepEvent(best.rep, appt);
-      if (eventId)
-        await prisma.appointment.update({ where: { id: appt.id }, data: { googleEventId: eventId } });
+      if (owner && best.rep.googleCalendarId) {
+        const eventId = await createEvent(owner, best.rep.googleCalendarId, appt);
+        if (eventId)
+          await prisma.appointment.update({ where: { id: appt.id }, data: { googleEventId: eventId } });
+      }
     } catch (e) {
       console.error("Calendar push failed (reassign):", e);
     }
-    await prisma.notification.create({
-      data: {
-        repId: best.rep.id,
-        message: `New appointment: ${appt.title} on ${appt.startsAt.toLocaleString()}`,
-      },
-    });
     assigned++;
   }
   return assigned;

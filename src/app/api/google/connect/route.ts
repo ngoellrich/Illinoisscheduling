@@ -8,7 +8,7 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.redirect(`${env.appUrl()}/login`);
   if (!env.googleConfigured()) {
-    return NextResponse.redirect(`${env.appUrl()}/rep?error=google_not_configured`);
+    return NextResponse.redirect(`${env.appUrl()}/admin?error=google_not_configured`);
   }
   // Identity is taken from the session in the callback; state carries the id
   // only as a sanity check / CSRF hint.

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import { reassignAppointment, reassignPending, syncIntake } from "@/lib/scheduling";
-import { deleteRepEvent } from "@/lib/google";
+import { deleteEvent } from "@/lib/google";
 import { configureIntake } from "@/lib/intake";
 
 // All actions here are admin-only.
@@ -14,12 +14,13 @@ export async function addRep(formData: FormData) {
   const email = String(formData.get("email") || "").trim().toLowerCase();
   const name = String(formData.get("name") || "").trim();
   const weeklyCap = parseInt(String(formData.get("weeklyCap") || "10"), 10) || 10;
+  const calendarId = String(formData.get("calendarId") || "").trim() || null;
   if (!email.includes("@")) throw new Error("Valid email required.");
 
   await prisma.user.upsert({
     where: { email },
-    update: { name: name || undefined, weeklyCap, role: "REP", active: true },
-    create: { email, name: name || null, weeklyCap, role: "REP" },
+    update: { name: name || undefined, weeklyCap, role: "REP", active: true, googleCalendarId: calendarId },
+    create: { email, name: name || null, weeklyCap, role: "REP", googleCalendarId: calendarId },
   });
   revalidatePath("/admin");
 }
@@ -29,11 +30,13 @@ export async function updateRep(formData: FormData) {
   const id = String(formData.get("id"));
   const weeklyCap = parseInt(String(formData.get("weeklyCap")), 10);
   const active = formData.get("active") === "on";
+  const calendarId = String(formData.get("calendarId") || "").trim() || null;
   await prisma.user.update({
     where: { id },
     data: {
       weeklyCap: isNaN(weeklyCap) ? undefined : weeklyCap,
       active,
+      googleCalendarId: calendarId,
     },
   });
   revalidatePath("/admin");
@@ -80,8 +83,12 @@ export async function cancelAppointment(formData: FormData) {
   await requireRole("ADMIN");
   const id = String(formData.get("id"));
   const appt = await prisma.appointment.findUnique({ where: { id }, include: { rep: true } });
-  if (appt?.rep && appt.googleEventId) {
-    await deleteRepEvent(appt.rep, appt.googleEventId);
+  if (appt?.rep?.googleCalendarId && appt.googleEventId) {
+    const state = await prisma.intakeState.findUnique({ where: { id: "intake" } });
+    const owner = state?.ownerUserId
+      ? await prisma.user.findUnique({ where: { id: state.ownerUserId } })
+      : null;
+    if (owner) await deleteEvent(owner, appt.rep.googleCalendarId, appt.googleEventId);
   }
   await prisma.appointment.update({ where: { id }, data: { status: "CANCELLED" } });
   revalidatePath("/admin");
