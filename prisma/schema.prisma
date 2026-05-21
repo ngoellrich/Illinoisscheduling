@@ -1,0 +1,133 @@
+// Solar Scheduler — data model
+// Postgres + Prisma. Run `npm run db:push` to sync, `npm run db:seed` to seed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  REP
+}
+
+enum AppointmentStatus {
+  ASSIGNED // assigned to a rep, on their calendar
+  PENDING // booked but no rep could be assigned yet
+  CANCELLED
+  COMPLETED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  phone     String?
+  role      Role     @default(REP)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  // Rep-specific config (null/ignored for admins)
+  weeklyCap Int @default(10)
+
+  // Google Calendar connection (per-rep OAuth)
+  googleConnected     Boolean   @default(false)
+  googleRefreshToken  String? // encrypted at rest via lib/crypto
+  googleCalendarId    String? // defaults to "primary" once connected
+  googleEmail         String?
+  googleConnectedAt   DateTime?
+
+  availability  Availability[]
+  appointments  Appointment[]
+  notifications Notification[]
+  sessions      Session[]
+  magicLinks    MagicLink[]
+}
+
+// One row per working window. dayOfWeek: 0=Sun .. 6=Sat (JS convention).
+// Times stored as minutes-since-midnight in the business timezone.
+model Availability {
+  id        String @id @default(cuid())
+  rep       User   @relation(fields: [repId], references: [id], onDelete: Cascade)
+  repId     String
+  dayOfWeek Int
+  startMin  Int
+  endMin    Int
+
+  @@index([repId])
+}
+
+model Appointment {
+  id       String            @id @default(cuid())
+  title    String // the calendar event's title
+  location String? // optional, from the event location
+  notes    String? // optional, from the event description
+  startsAt DateTime
+  endsAt   DateTime
+  status   AppointmentStatus @default(PENDING)
+
+  rep   User?   @relation(fields: [repId], references: [id], onDelete: SetNull)
+  repId String?
+
+  // Monday 00:00 (business tz) of the appointment's week — for weekly counting.
+  weekStart DateTime
+
+  // Source event id on the admin's intake calendar (dedup key).
+  intakeEventId String? @unique
+  // Event id created on the assigned rep's own calendar.
+  googleEventId String?
+  createdAt     DateTime @default(now())
+
+  @@index([repId])
+  @@index([startsAt])
+  @@index([weekStart])
+}
+
+// Singleton (id = "intake"): which calendar is the source of appointments,
+// who owns it, and the Google push-channel / sync-token state.
+model IntakeState {
+  id                String   @id @default("intake")
+  ownerUserId       String? // the admin User whose Google account owns the calendar
+  calendarId        String? // the intake calendar id
+  syncToken         String? // incremental-sync token from Google
+  channelId         String? // active push channel id
+  resourceId        String? // push channel resource id (needed to stop it)
+  channelExpiration DateTime?
+  updatedAt         DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  rep       User     @relation(fields: [repId], references: [id], onDelete: Cascade)
+  repId     String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([repId, read])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model MagicLink {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+}
