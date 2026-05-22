@@ -7,7 +7,10 @@ import { decrypt, encrypt } from "./crypto";
 import type { User } from "@prisma/client";
 
 const SCOPES = [
-  "https://www.googleapis.com/auth/calendar.events",
+  // Full calendar scope: needed to LIST calendars (calendarList.list) in
+  // addition to reading the intake calendar and writing to reps' calendars.
+  // The narrower calendar.events scope cannot list calendars.
+  "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
