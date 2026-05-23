@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { renewWatchIfNeeded } from "@/lib/intake";
+import { reconcileRepWatches } from "@/lib/repwatch";
 import { syncIntake } from "@/lib/scheduling";
 
 // Safety net for push notifications: renews the watch channel before it
@@ -11,6 +12,7 @@ import { syncIntake } from "@/lib/scheduling";
 export async function GET(req: Request) {
   if (!authorized(req)) return new NextResponse("forbidden", { status: 403 });
   const renewed = await renewWatchIfNeeded();
+  await reconcileRepWatches(); // ensure each rep's calendar watch is current
   const created = await syncIntake();
   return NextResponse.json({ ok: true, renewed, created });
 }

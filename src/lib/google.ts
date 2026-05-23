@@ -132,6 +132,42 @@ export async function isCalendarBusy(
   }
 }
 
+/**
+ * Is there a *foreign* busy event on the calendar during [start, end) — i.e. a
+ * real event other than the one we placed (ignoreEventId)? Used to detect that
+ * a rep blocked time over an appointment we'd already assigned them.
+ * "Free"-marked (transparent) and cancelled events don't count.
+ */
+export async function hasForeignBusyEvent(
+  owner: User,
+  calendarId: string,
+  start: Date,
+  end: Date,
+  ignoreEventId?: string
+): Promise<boolean> {
+  const client = clientForUser(owner);
+  if (!client || !calendarId) return false;
+  const calendar = google.calendar({ version: "v3", auth: client });
+  try {
+    const res = await calendar.events.list({
+      calendarId,
+      timeMin: start.toISOString(),
+      timeMax: end.toISOString(),
+      singleEvents: true,
+      maxResults: 50,
+    });
+    return (res.data.items || []).some(
+      (ev) =>
+        ev.id !== ignoreEventId &&
+        ev.status !== "cancelled" &&
+        ev.transparency !== "transparent"
+    );
+  } catch (e) {
+    console.error("conflict check failed for", calendarId, e);
+    return false; // can't verify → don't disrupt existing assignment
+  }
+}
+
 /** Delete an event from a calendar (best-effort). */
 export async function deleteEvent(owner: User, calendarId: string, eventId: string): Promise<void> {
   const client = clientForUser(owner);

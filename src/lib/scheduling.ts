@@ -4,6 +4,7 @@ import {
   createEvent,
   deleteEvent,
   fetchChangedEvents,
+  hasForeignBusyEvent,
   isCalendarBusy,
   markIntakeAssigned,
 } from "./google";
@@ -153,12 +154,18 @@ function rankEligible(eligible: EligibleRep[]): EligibleRep[] {
  * skips anyone whose actual Google Calendar shows them busy at that time — so a
  * rep is never booked over an existing event, for any reason.
  */
-async function assignBestRep(start: Date, end: Date, owner: User | null): Promise<EligibleRep | null> {
-  const [reps, busyByRep, weekCounts] = await Promise.all([
+async function assignBestRep(
+  start: Date,
+  end: Date,
+  owner: User | null,
+  excludeRepId?: string
+): Promise<EligibleRep | null> {
+  const [allReps, busyByRep, weekCounts] = await Promise.all([
     loadActiveReps(),
     loadBusy(start, end),
     loadWeeklyCounts(start, end),
   ]);
+  const reps = excludeRepId ? allReps.filter((r) => r.id !== excludeRepId) : allReps;
   const ranked = rankEligible(eligibleReps(reps, start, end, busyByRep, weekCounts));
 
   for (const cand of ranked) {
@@ -278,10 +285,67 @@ async function processIntakeEvent(
 }
 
 /** The connected owner account that reads intake + writes to rep calendars. */
-async function getIntakeOwner(): Promise<User | null> {
+export async function getIntakeOwner(): Promise<User | null> {
   const state = await prisma.intakeState.findUnique({ where: { id: "intake" } });
   if (!state?.ownerUserId) return null;
   return prisma.user.findUnique({ where: { id: state.ownerUserId } });
+}
+
+/**
+ * A rep's calendar changed — re-check their upcoming appointments. If the rep
+ * now has a conflicting event over one (they blocked the time, added a meeting,
+ * etc.), move that appointment to another available rep, or mark it PENDING.
+ */
+export async function reEvaluateRep(repId: string): Promise<void> {
+  const owner = await getIntakeOwner();
+  const rep = await prisma.user.findUnique({ where: { id: repId } });
+  if (!owner || !rep?.googleCalendarId) return;
+
+  const upcoming = await prisma.appointment.findMany({
+    where: { repId, status: "ASSIGNED", startsAt: { gte: new Date() } },
+  });
+
+  for (const appt of upcoming) {
+    const conflict = await hasForeignBusyEvent(
+      owner,
+      rep.googleCalendarId,
+      appt.startsAt,
+      appt.endsAt,
+      appt.googleEventId || undefined
+    );
+    if (!conflict) continue;
+
+    // The rep is now busy — pull our event off their calendar.
+    if (appt.googleEventId) await deleteEvent(owner, rep.googleCalendarId, appt.googleEventId);
+
+    // Try to re-home it with a different rep.
+    const best = await assignBestRep(appt.startsAt, appt.endsAt, owner, repId);
+    if (best) {
+      let newEventId: string | null = null;
+      try {
+        newEventId = await createEvent(owner, best.rep.googleCalendarId!, appt);
+      } catch (e) {
+        console.error("Calendar push failed (re-home):", e);
+      }
+      await prisma.appointment.update({
+        where: { id: appt.id },
+        data: { repId: best.rep.id, googleEventId: newEventId },
+      });
+      await notifyAdmins(
+        `Moved "${appt.title}" on ${appt.startsAt.toLocaleString()} from ` +
+          `${rep.name || rep.email} to ${best.rep.name || best.rep.email} (calendar conflict).`
+      );
+    } else {
+      await prisma.appointment.update({
+        where: { id: appt.id },
+        data: { repId: null, status: "PENDING", googleEventId: null },
+      });
+      await notifyAdmins(
+        `"${appt.title}" on ${appt.startsAt.toLocaleString()} is now PENDING — ` +
+          `${rep.name || rep.email} got blocked and no other rep is available.`
+      );
+    }
+  }
 }
 
 /**

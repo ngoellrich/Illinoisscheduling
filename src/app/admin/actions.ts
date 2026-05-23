@@ -6,6 +6,7 @@ import { requireRole } from "@/lib/auth";
 import { reassignAppointment, reassignPending, syncIntake } from "@/lib/scheduling";
 import { deleteEvent } from "@/lib/google";
 import { configureIntake } from "@/lib/intake";
+import { startRepWatch, stopRepWatch } from "@/lib/repwatch";
 
 // All actions here are admin-only.
 
@@ -21,11 +22,12 @@ export async function addRep(formData: FormData) {
     null;
   if (!email.includes("@")) throw new Error("Valid email required.");
 
-  await prisma.user.upsert({
+  const rep = await prisma.user.upsert({
     where: { email },
     update: { name: name || undefined, weeklyCap, role: "REP", active: true, googleCalendarId: calendarId },
     create: { email, name: name || null, weeklyCap, role: "REP", googleCalendarId: calendarId },
   });
+  if (calendarId) await startRepWatch(rep.id);
   revalidatePath("/admin");
 }
 
@@ -46,12 +48,16 @@ export async function updateRep(formData: FormData) {
       googleCalendarId: calendarId,
     },
   });
+  // Keep the calendar watch in sync with the mapping.
+  if (calendarId && active) await startRepWatch(id);
+  else await stopRepWatch(id);
   revalidatePath("/admin");
 }
 
 export async function removeRep(formData: FormData) {
   await requireRole("ADMIN");
   const id = String(formData.get("id"));
+  await stopRepWatch(id); // tear down the calendar watch first
   // Keep history: deactivate rather than hard-delete if they have appointments.
   const apptCount = await prisma.appointment.count({ where: { repId: id } });
   if (apptCount > 0) {

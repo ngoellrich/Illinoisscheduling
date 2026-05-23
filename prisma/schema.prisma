@@ -87,6 +87,18 @@ model Appointment {
   @@index([weekStart])
 }
 
+// One per mapped rep: the Google push channel watching that rep's calendar,
+// so we react when they block time over an already-assigned appointment.
+model RepWatch {
+  id                String   @id @default(cuid())
+  repId             String   @unique
+  calendarId        String
+  channelId         String   @unique
+  resourceId        String
+  channelExpiration DateTime?
+  updatedAt         DateTime @updatedAt
+}
+
 // Singleton (id = "intake"): which calendar is the source of appointments,
 // who owns it, and the Google push-channel / sync-token state.
 model IntakeState {
