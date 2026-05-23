@@ -22,10 +22,7 @@ export default async function AdminPage() {
 
   const reps = await prisma.user.findMany({
     where: { role: "REP" },
-    include: {
-      availability: true,
-      timeOff: { where: { endsAt: { gte: new Date() } }, orderBy: { startsAt: "asc" } },
-    },
+    include: { availability: true },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
 
@@ -141,21 +138,7 @@ export default async function AdminPage() {
                 startMin: a.startMin,
                 endMin: a.endMin,
               }));
-              const timeOff = r.timeOff.map((t) => ({
-                id: t.id,
-                label:
-                  `${fmt(t.startsAt, "EEE MMM d, h:mm a")} – ${fmt(t.endsAt, "MMM d, h:mm a")}` +
-                  (t.reason ? ` · ${t.reason}` : ""),
-              }));
-              return (
-                <RepCard
-                  key={r.id}
-                  rep={data}
-                  windows={windows}
-                  calendars={calendars}
-                  timeOff={timeOff}
-                />
-              );
+              return <RepCard key={r.id} rep={data} windows={windows} calendars={calendars} />;
             })}
           </div>
         </section>

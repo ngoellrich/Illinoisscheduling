@@ -92,21 +92,6 @@ function hasConflict(
   return busy.some((b) => b.start < e && b.end > s);
 }
 
-/** Per-rep time-off blocks overlapping a date range. */
-async function loadTimeOff(rangeStart: Date, rangeEnd: Date) {
-  const blocks = await prisma.timeOff.findMany({
-    where: { startsAt: { lt: rangeEnd }, endsAt: { gt: rangeStart } },
-    select: { repId: true, startsAt: true, endsAt: true },
-  });
-  const byRep = new Map<string, { start: number; end: number }[]>();
-  for (const b of blocks) {
-    const arr = byRep.get(b.repId) ?? [];
-    arr.push({ start: b.startsAt.getTime(), end: b.endsAt.getTime() });
-    byRep.set(b.repId, arr);
-  }
-  return byRep;
-}
-
 // ---- Eligibility -------------------------------------------------------------
 
 interface EligibleRep {
@@ -123,8 +108,7 @@ function eligibleReps(
   start: Date,
   end: Date,
   busyByRep: Map<string, { start: number; end: number }[]>,
-  weekCounts: Map<string, number>,
-  timeOffByRep: Map<string, { start: number; end: number }[]>
+  weekCounts: Map<string, number>
 ): EligibleRep[] {
   const wd = dayOfWeek(start);
   const startMin = minutesOfDay(start);
@@ -141,9 +125,6 @@ function eligibleReps(
       (w) => w.dayOfWeek === wd && startMin >= w.startMin && endMin <= w.endMin
     );
     if (!fits) continue;
-
-    // Time-off block covering this slot makes the rep unavailable.
-    if (hasConflict(timeOffByRep.get(rep.id), start, end)) continue;
 
     // Hard constraint: no double-booking.
     if (hasConflict(busyByRep.get(rep.id), start, end)) continue;
@@ -179,14 +160,13 @@ async function assignBestRep(
   owner: User | null,
   excludeRepId?: string
 ): Promise<EligibleRep | null> {
-  const [allReps, busyByRep, weekCounts, timeOffByRep] = await Promise.all([
+  const [allReps, busyByRep, weekCounts] = await Promise.all([
     loadActiveReps(),
     loadBusy(start, end),
     loadWeeklyCounts(start, end),
-    loadTimeOff(start, end),
   ]);
   const reps = excludeRepId ? allReps.filter((r) => r.id !== excludeRepId) : allReps;
-  const ranked = rankEligible(eligibleReps(reps, start, end, busyByRep, weekCounts, timeOffByRep));
+  const ranked = rankEligible(eligibleReps(reps, start, end, busyByRep, weekCounts));
 
   for (const cand of ranked) {
     if (owner && cand.rep.googleCalendarId) {
@@ -378,28 +358,6 @@ export async function reEvaluateRep(repId: string): Promise<void> {
       appt.googleEventId || undefined
     );
     if (conflict) await rehomeAppointment(appt, rep, owner, "calendar conflict");
-  }
-}
-
-/**
- * After a time-off block is added/changed, move any of the rep's upcoming
- * appointments that now fall inside a block to another rep (or PENDING).
- */
-export async function applyTimeOff(repId: string): Promise<void> {
-  const owner = await getIntakeOwner();
-  const rep = await prisma.user.findUnique({ where: { id: repId } });
-  if (!rep) return;
-
-  const now = new Date();
-  const blocks = await prisma.timeOff.findMany({ where: { repId, endsAt: { gt: now } } });
-  if (blocks.length === 0) return;
-
-  const upcoming = await prisma.appointment.findMany({
-    where: { repId, status: "ASSIGNED", startsAt: { gte: now } },
-  });
-  for (const appt of upcoming) {
-    const blocked = blocks.some((b) => b.startsAt < appt.endsAt && b.endsAt > appt.startsAt);
-    if (blocked) await rehomeAppointment(appt, rep, owner, "time off");
   }
 }
 

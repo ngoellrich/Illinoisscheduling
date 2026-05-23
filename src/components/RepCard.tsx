@@ -2,18 +2,7 @@
 
 import { useState } from "react";
 import AvailabilityEditor, { Window } from "./AvailabilityEditor";
-import {
-  updateRep,
-  removeRep,
-  saveAvailability,
-  addTimeOff,
-  removeTimeOff,
-} from "@/app/admin/actions";
-
-export interface TimeOffItem {
-  id: string;
-  label: string;
-}
+import { updateRep, removeRep, saveAvailability } from "@/app/admin/actions";
 
 export interface RepCardData {
   id: string;
@@ -35,15 +24,12 @@ export default function RepCard({
   rep,
   windows,
   calendars,
-  timeOff,
 }: {
   rep: RepCardData;
   windows: Window[];
   calendars: CalendarChoice[];
-  timeOff: TimeOffItem[];
 }) {
   const [showAvail, setShowAvail] = useState(false);
-  const [showTimeOff, setShowTimeOff] = useState(false);
   const full = rep.weekCount >= rep.weeklyCap;
   const mapped = calendars.find((c) => c.id === rep.googleCalendarId);
 
@@ -122,12 +108,6 @@ export default function RepCard({
         <button className="text-sm font-medium text-brand-dark" onClick={() => setShowAvail((s) => !s)}>
           {showAvail ? "Hide availability" : "Edit availability"}
         </button>
-        <button
-          className="text-sm font-medium text-brand-dark"
-          onClick={() => setShowTimeOff((s) => !s)}
-        >
-          {showTimeOff ? "Hide time off" : `Time off${timeOff.length ? ` (${timeOff.length})` : ""}`}
-        </button>
         <form action={removeRep}>
           <input type="hidden" name="id" value={rep.id} />
           <button className="text-sm text-red-600 hover:underline" type="submit">
@@ -139,54 +119,10 @@ export default function RepCard({
       {showAvail && (
         <div className="mt-4 border-t border-slate-100 pt-4">
           <p className="mb-2 text-xs text-slate-500">
-            Recurring weekly hours the rep can take appointments.
+            The hours this rep can take appointments each day. Stays the same until you change it.
+            One-off days off are handled automatically from the rep&apos;s own calendar.
           </p>
           <AvailabilityEditor windows={windows} action={(w) => saveAvailability(rep.id, w)} />
-        </div>
-      )}
-
-      {showTimeOff && (
-        <div className="mt-4 border-t border-slate-100 pt-4">
-          <p className="mb-2 text-xs text-slate-500">
-            One-off blocks when this rep can&apos;t take appointments (vacation, a busy
-            afternoon, etc.). The scheduler won&apos;t book them during these, and will move any
-            already-assigned appointment that a new block covers.
-          </p>
-
-          {timeOff.length > 0 && (
-            <ul className="mb-3 space-y-1">
-              {timeOff.map((t) => (
-                <li key={t.id} className="flex items-center justify-between text-sm">
-                  <span>{t.label}</span>
-                  <form action={removeTimeOff}>
-                    <input type="hidden" name="id" value={t.id} />
-                    <button className="text-xs text-red-600 hover:underline" type="submit">
-                      Remove
-                    </button>
-                  </form>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <form action={addTimeOff} className="flex flex-wrap items-end gap-2">
-            <input type="hidden" name="repId" value={rep.id} />
-            <div>
-              <label className="label text-xs">From</label>
-              <input type="datetime-local" name="start" required className="input" />
-            </div>
-            <div>
-              <label className="label text-xs">To</label>
-              <input type="datetime-local" name="end" required className="input" />
-            </div>
-            <div className="min-w-[140px] flex-1">
-              <label className="label text-xs">Reason (optional)</label>
-              <input name="reason" className="input" placeholder="Vacation, appt, etc." />
-            </div>
-            <button className="btn-ghost" type="submit">
-              Add block
-            </button>
-          </form>
         </div>
       )}
     </div>

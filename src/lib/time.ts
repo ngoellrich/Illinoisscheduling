@@ -62,9 +62,3 @@ export function minToHHMM(min: number): string {
 }
 
 export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-/** Interpret a <input type="datetime-local"> value ("2026-05-25T14:00") as an
- * instant in the business timezone. */
-export function bizLocalToDate(local: string): Date {
-  return DateTime.fromISO(local, { zone: tz() }).toJSDate();
-}
