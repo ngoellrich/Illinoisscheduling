@@ -1,6 +1,12 @@
 import { prisma } from "./prisma";
 import { env } from "./env";
-import { createEvent, deleteEvent, fetchChangedEvents, markIntakeAssigned } from "./google";
+import {
+  createEvent,
+  deleteEvent,
+  fetchChangedEvents,
+  isCalendarBusy,
+  markIntakeAssigned,
+} from "./google";
 import { dayOfWeek, minutesOfDay, weekStart } from "./time";
 import type { Availability, User } from "@prisma/client";
 import type { calendar_v3 } from "googleapis";
@@ -131,26 +137,38 @@ function eligibleReps(
   return out;
 }
 
-/** Pick the best rep: fewest this week, then lowest utilization, then name. */
-function pickBest(eligible: EligibleRep[]): EligibleRep | null {
-  if (eligible.length === 0) return null;
+/** Rank eligible reps: fewest this week, then lowest utilization, then name. */
+function rankEligible(eligible: EligibleRep[]): EligibleRep[] {
   return [...eligible].sort((a, b) => {
     if (a.weekCount !== b.weekCount) return a.weekCount - b.weekCount;
     const au = a.weekCount / Math.max(a.rep.weeklyCap, 1);
     const bu = b.weekCount / Math.max(b.rep.weeklyCap, 1);
     if (au !== bu) return au - bu;
     return (a.rep.name || a.rep.email).localeCompare(b.rep.name || b.rep.email);
-  })[0];
+  });
 }
 
-/** Assign the single best rep for [start, end), or null. Loads fresh data. */
-async function assignBestRep(start: Date, end: Date): Promise<EligibleRep | null> {
+/**
+ * Assign the best rep for [start, end), or null. Walks reps in ranked order and
+ * skips anyone whose actual Google Calendar shows them busy at that time — so a
+ * rep is never booked over an existing event, for any reason.
+ */
+async function assignBestRep(start: Date, end: Date, owner: User | null): Promise<EligibleRep | null> {
   const [reps, busyByRep, weekCounts] = await Promise.all([
     loadActiveReps(),
     loadBusy(start, end),
     loadWeeklyCounts(start, end),
   ]);
-  return pickBest(eligibleReps(reps, start, end, busyByRep, weekCounts));
+  const ranked = rankEligible(eligibleReps(reps, start, end, busyByRep, weekCounts));
+
+  for (const cand of ranked) {
+    if (owner && cand.rep.googleCalendarId) {
+      const busy = await isCalendarBusy(owner, cand.rep.googleCalendarId, start, end);
+      if (busy) continue; // something is on their calendar — skip to next rep
+    }
+    return cand;
+  }
+  return null;
 }
 
 // =============================================================================
@@ -217,7 +235,7 @@ async function processIntakeEvent(
   if (!parsed) return;
   if (parsed.start.getTime() < Date.now()) return; // ignore past events
 
-  const best = await assignBestRep(parsed.start, parsed.end);
+  const best = await assignBestRep(parsed.start, parsed.end, owner);
 
   const appt = await prisma.appointment.create({
     data: {
@@ -362,12 +380,7 @@ export async function reassignPending(): Promise<number> {
   const owner = await getIntakeOwner();
   let assigned = 0;
   for (const appt of pending) {
-    const [reps, busyByRep, weekCounts] = await Promise.all([
-      loadActiveReps(),
-      loadBusy(appt.startsAt, appt.endsAt),
-      loadWeeklyCounts(appt.startsAt, appt.endsAt),
-    ]);
-    const best = pickBest(eligibleReps(reps, appt.startsAt, appt.endsAt, busyByRep, weekCounts));
+    const best = await assignBestRep(appt.startsAt, appt.endsAt, owner);
     if (!best) continue;
 
     await prisma.appointment.update({

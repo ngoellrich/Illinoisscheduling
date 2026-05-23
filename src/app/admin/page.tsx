@@ -96,7 +96,7 @@ export default async function AdminPage() {
               <label className="label">Email</label>
               <input name="email" type="email" required className="input" placeholder="jane@company.com" />
             </div>
-            <div className="min-w-[180px] flex-1">
+            <div className="min-w-[200px] flex-1">
               <label className="label">Rep's calendar</label>
               <select name="calendarId" className="input" defaultValue="">
                 <option value="">— map later —</option>
@@ -106,6 +106,11 @@ export default async function AdminPage() {
                   </option>
                 ))}
               </select>
+              <input
+                name="calendarIdManual"
+                className="input mt-1 text-xs"
+                placeholder="…or paste Calendar ID"
+              />
             </div>
             <div>
               <label className="label">Weekly cap</label>

@@ -101,6 +101,37 @@ export async function createEvent(
   return res.data.id || null;
 }
 
+/**
+ * Is the calendar busy at any point during [start, end)? Uses Google's
+ * free/busy, so it sees ALL events on that calendar — appointments this app
+ * created, the rep's personal events, time they blocked off, etc.
+ * Returns false if it can't check (no access) so scheduling never fully stalls.
+ */
+export async function isCalendarBusy(
+  owner: User,
+  calendarId: string,
+  start: Date,
+  end: Date
+): Promise<boolean> {
+  const client = clientForUser(owner);
+  if (!client || !calendarId) return false;
+  const calendar = google.calendar({ version: "v3", auth: client });
+  try {
+    const res = await calendar.freebusy.query({
+      requestBody: {
+        timeMin: start.toISOString(),
+        timeMax: end.toISOString(),
+        items: [{ id: calendarId }],
+      },
+    });
+    const busy = res.data.calendars?.[calendarId]?.busy || [];
+    return busy.length > 0; // any busy block overlapping the window
+  } catch (e) {
+    console.error("freebusy check failed for", calendarId, e);
+    return false; // can't verify → don't block (avoid stalling all scheduling)
+  }
+}
+
 /** Delete an event from a calendar (best-effort). */
 export async function deleteEvent(owner: User, calendarId: string, eventId: string): Promise<void> {
   const client = clientForUser(owner);

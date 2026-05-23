@@ -51,7 +51,7 @@ export default function RepCard({
               }`}
             >
               {rep.googleCalendarId
-                ? `Calendar: ${mapped?.summary || "mapped"}`
+                ? `Calendar: ${mapped?.summary || rep.googleCalendarId}`
                 : "No calendar mapped"}
             </span>
             <span className={`pill ${full ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600"}`}>
@@ -63,9 +63,13 @@ export default function RepCard({
 
       <form action={updateRep} className="mt-3 flex flex-wrap items-end gap-3">
         <input type="hidden" name="id" value={rep.id} />
-        <div className="min-w-[220px] flex-1">
+        <div className="min-w-[240px] flex-1">
           <label className="label text-xs">Rep's calendar</label>
-          <select name="calendarId" defaultValue={rep.googleCalendarId || ""} className="input">
+          <select
+            name="calendarId"
+            defaultValue={mapped ? rep.googleCalendarId || "" : ""}
+            className="input"
+          >
             <option value="">— not mapped —</option>
             {calendars.map((c) => (
               <option key={c.id} value={c.id} disabled={!c.canWrite}>
@@ -74,6 +78,12 @@ export default function RepCard({
               </option>
             ))}
           </select>
+          <input
+            name="calendarIdManual"
+            className="input mt-1 text-xs"
+            placeholder="…or paste Calendar ID (overrides the dropdown)"
+            defaultValue={mapped ? "" : rep.googleCalendarId || ""}
+          />
         </div>
         <div>
           <label className="label text-xs">Weekly cap</label>

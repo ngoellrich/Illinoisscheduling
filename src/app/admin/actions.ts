@@ -14,7 +14,11 @@ export async function addRep(formData: FormData) {
   const email = String(formData.get("email") || "").trim().toLowerCase();
   const name = String(formData.get("name") || "").trim();
   const weeklyCap = parseInt(String(formData.get("weeklyCap") || "10"), 10) || 10;
-  const calendarId = String(formData.get("calendarId") || "").trim() || null;
+  // A pasted Calendar ID wins over the dropdown selection.
+  const calendarId =
+    String(formData.get("calendarIdManual") || "").trim() ||
+    String(formData.get("calendarId") || "").trim() ||
+    null;
   if (!email.includes("@")) throw new Error("Valid email required.");
 
   await prisma.user.upsert({
@@ -30,7 +34,10 @@ export async function updateRep(formData: FormData) {
   const id = String(formData.get("id"));
   const weeklyCap = parseInt(String(formData.get("weeklyCap")), 10);
   const active = formData.get("active") === "on";
-  const calendarId = String(formData.get("calendarId") || "").trim() || null;
+  const calendarId =
+    String(formData.get("calendarIdManual") || "").trim() ||
+    String(formData.get("calendarId") || "").trim() ||
+    null;
   await prisma.user.update({
     where: { id },
     data: {
