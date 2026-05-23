@@ -3,10 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
-import { reassignAppointment, reassignPending, syncIntake } from "@/lib/scheduling";
+import { applyTimeOff, reassignAppointment, reassignPending, syncIntake } from "@/lib/scheduling";
 import { deleteEvent } from "@/lib/google";
 import { configureIntake } from "@/lib/intake";
 import { startRepWatch, stopRepWatch } from "@/lib/repwatch";
+import { bizLocalToDate } from "@/lib/time";
 
 // All actions here are admin-only.
 
@@ -65,6 +66,28 @@ export async function removeRep(formData: FormData) {
   } else {
     await prisma.user.delete({ where: { id } });
   }
+  revalidatePath("/admin");
+}
+
+/** Add a time-off block for a rep, then re-home anything it now covers. */
+export async function addTimeOff(formData: FormData) {
+  await requireRole("ADMIN");
+  const repId = String(formData.get("repId"));
+  const reason = String(formData.get("reason") || "").trim() || null;
+  const startsAt = bizLocalToDate(String(formData.get("start") || ""));
+  const endsAt = bizLocalToDate(String(formData.get("end") || ""));
+  if (isNaN(startsAt.getTime()) || isNaN(endsAt.getTime()) || endsAt <= startsAt) {
+    throw new Error("Enter a valid start and end (end must be after start).");
+  }
+  await prisma.timeOff.create({ data: { repId, startsAt, endsAt, reason } });
+  await applyTimeOff(repId); // move any now-conflicting appointments off this rep
+  revalidatePath("/admin");
+}
+
+export async function removeTimeOff(formData: FormData) {
+  await requireRole("ADMIN");
+  const id = String(formData.get("id"));
+  await prisma.timeOff.delete({ where: { id } });
   revalidatePath("/admin");
 }
 

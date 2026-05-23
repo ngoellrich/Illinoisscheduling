@@ -9,7 +9,7 @@ import {
   markIntakeAssigned,
 } from "./google";
 import { dayOfWeek, minutesOfDay, weekStart } from "./time";
-import type { Availability, User } from "@prisma/client";
+import type { Appointment, Availability, User } from "@prisma/client";
 import type { calendar_v3 } from "googleapis";
 
 // =============================================================================
@@ -92,6 +92,21 @@ function hasConflict(
   return busy.some((b) => b.start < e && b.end > s);
 }
 
+/** Per-rep time-off blocks overlapping a date range. */
+async function loadTimeOff(rangeStart: Date, rangeEnd: Date) {
+  const blocks = await prisma.timeOff.findMany({
+    where: { startsAt: { lt: rangeEnd }, endsAt: { gt: rangeStart } },
+    select: { repId: true, startsAt: true, endsAt: true },
+  });
+  const byRep = new Map<string, { start: number; end: number }[]>();
+  for (const b of blocks) {
+    const arr = byRep.get(b.repId) ?? [];
+    arr.push({ start: b.startsAt.getTime(), end: b.endsAt.getTime() });
+    byRep.set(b.repId, arr);
+  }
+  return byRep;
+}
+
 // ---- Eligibility -------------------------------------------------------------
 
 interface EligibleRep {
@@ -108,7 +123,8 @@ function eligibleReps(
   start: Date,
   end: Date,
   busyByRep: Map<string, { start: number; end: number }[]>,
-  weekCounts: Map<string, number>
+  weekCounts: Map<string, number>,
+  timeOffByRep: Map<string, { start: number; end: number }[]>
 ): EligibleRep[] {
   const wd = dayOfWeek(start);
   const startMin = minutesOfDay(start);
@@ -125,6 +141,9 @@ function eligibleReps(
       (w) => w.dayOfWeek === wd && startMin >= w.startMin && endMin <= w.endMin
     );
     if (!fits) continue;
+
+    // Time-off block covering this slot makes the rep unavailable.
+    if (hasConflict(timeOffByRep.get(rep.id), start, end)) continue;
 
     // Hard constraint: no double-booking.
     if (hasConflict(busyByRep.get(rep.id), start, end)) continue;
@@ -160,13 +179,14 @@ async function assignBestRep(
   owner: User | null,
   excludeRepId?: string
 ): Promise<EligibleRep | null> {
-  const [allReps, busyByRep, weekCounts] = await Promise.all([
+  const [allReps, busyByRep, weekCounts, timeOffByRep] = await Promise.all([
     loadActiveReps(),
     loadBusy(start, end),
     loadWeeklyCounts(start, end),
+    loadTimeOff(start, end),
   ]);
   const reps = excludeRepId ? allReps.filter((r) => r.id !== excludeRepId) : allReps;
-  const ranked = rankEligible(eligibleReps(reps, start, end, busyByRep, weekCounts));
+  const ranked = rankEligible(eligibleReps(reps, start, end, busyByRep, weekCounts, timeOffByRep));
 
   for (const cand of ranked) {
     if (owner && cand.rep.googleCalendarId) {
@@ -292,6 +312,50 @@ export async function getIntakeOwner(): Promise<User | null> {
 }
 
 /**
+ * Move an appointment off `fromRep` (who is now unavailable for it) to the best
+ * other available rep, or mark it PENDING. `reason` is used in the admin alert.
+ */
+async function rehomeAppointment(
+  appt: Appointment,
+  fromRep: User,
+  owner: User | null,
+  reason: string
+): Promise<void> {
+  // Pull our event off the current rep's calendar.
+  if (owner && fromRep.googleCalendarId && appt.googleEventId) {
+    await deleteEvent(owner, fromRep.googleCalendarId, appt.googleEventId);
+  }
+
+  const best = await assignBestRep(appt.startsAt, appt.endsAt, owner, fromRep.id);
+  if (best) {
+    let newEventId: string | null = null;
+    try {
+      if (owner && best.rep.googleCalendarId)
+        newEventId = await createEvent(owner, best.rep.googleCalendarId, appt);
+    } catch (e) {
+      console.error("Calendar push failed (re-home):", e);
+    }
+    await prisma.appointment.update({
+      where: { id: appt.id },
+      data: { repId: best.rep.id, status: "ASSIGNED", googleEventId: newEventId },
+    });
+    await notifyAdmins(
+      `Moved "${appt.title}" on ${appt.startsAt.toLocaleString()} from ` +
+        `${fromRep.name || fromRep.email} to ${best.rep.name || best.rep.email} (${reason}).`
+    );
+  } else {
+    await prisma.appointment.update({
+      where: { id: appt.id },
+      data: { repId: null, status: "PENDING", googleEventId: null },
+    });
+    await notifyAdmins(
+      `"${appt.title}" on ${appt.startsAt.toLocaleString()} is now PENDING — ` +
+        `${fromRep.name || fromRep.email} is unavailable (${reason}) and no other rep is free.`
+    );
+  }
+}
+
+/**
  * A rep's calendar changed — re-check their upcoming appointments. If the rep
  * now has a conflicting event over one (they blocked the time, added a meeting,
  * etc.), move that appointment to another available rep, or mark it PENDING.
@@ -313,38 +377,29 @@ export async function reEvaluateRep(repId: string): Promise<void> {
       appt.endsAt,
       appt.googleEventId || undefined
     );
-    if (!conflict) continue;
+    if (conflict) await rehomeAppointment(appt, rep, owner, "calendar conflict");
+  }
+}
 
-    // The rep is now busy — pull our event off their calendar.
-    if (appt.googleEventId) await deleteEvent(owner, rep.googleCalendarId, appt.googleEventId);
+/**
+ * After a time-off block is added/changed, move any of the rep's upcoming
+ * appointments that now fall inside a block to another rep (or PENDING).
+ */
+export async function applyTimeOff(repId: string): Promise<void> {
+  const owner = await getIntakeOwner();
+  const rep = await prisma.user.findUnique({ where: { id: repId } });
+  if (!rep) return;
 
-    // Try to re-home it with a different rep.
-    const best = await assignBestRep(appt.startsAt, appt.endsAt, owner, repId);
-    if (best) {
-      let newEventId: string | null = null;
-      try {
-        newEventId = await createEvent(owner, best.rep.googleCalendarId!, appt);
-      } catch (e) {
-        console.error("Calendar push failed (re-home):", e);
-      }
-      await prisma.appointment.update({
-        where: { id: appt.id },
-        data: { repId: best.rep.id, googleEventId: newEventId },
-      });
-      await notifyAdmins(
-        `Moved "${appt.title}" on ${appt.startsAt.toLocaleString()} from ` +
-          `${rep.name || rep.email} to ${best.rep.name || best.rep.email} (calendar conflict).`
-      );
-    } else {
-      await prisma.appointment.update({
-        where: { id: appt.id },
-        data: { repId: null, status: "PENDING", googleEventId: null },
-      });
-      await notifyAdmins(
-        `"${appt.title}" on ${appt.startsAt.toLocaleString()} is now PENDING — ` +
-          `${rep.name || rep.email} got blocked and no other rep is available.`
-      );
-    }
+  const now = new Date();
+  const blocks = await prisma.timeOff.findMany({ where: { repId, endsAt: { gt: now } } });
+  if (blocks.length === 0) return;
+
+  const upcoming = await prisma.appointment.findMany({
+    where: { repId, status: "ASSIGNED", startsAt: { gte: now } },
+  });
+  for (const appt of upcoming) {
+    const blocked = blocks.some((b) => b.startsAt < appt.endsAt && b.endsAt > appt.startsAt);
+    if (blocked) await rehomeAppointment(appt, rep, owner, "time off");
   }
 }
 

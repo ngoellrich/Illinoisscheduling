@@ -42,10 +42,26 @@ model User {
   googleConnectedAt   DateTime?
 
   availability  Availability[]
+  timeOff       TimeOff[]
   appointments  Appointment[]
   notifications Notification[]
   sessions      Session[]
   magicLinks    MagicLink[]
+}
+
+// Ad-hoc unavailability a rep can't take appointments during (vacation, a
+// blocked afternoon, etc.). Managed by the admin in the app. The scheduler
+// treats any overlap with a block as "unavailable".
+model TimeOff {
+  id       String   @id @default(cuid())
+  rep      User     @relation(fields: [repId], references: [id], onDelete: Cascade)
+  repId    String
+  startsAt DateTime
+  endsAt   DateTime
+  reason   String?
+  createdAt DateTime @default(now())
+
+  @@index([repId])
 }
 
 // One row per working window. dayOfWeek: 0=Sun .. 6=Sat (JS convention).
